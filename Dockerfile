@@ -1,32 +1,35 @@
-#Depending on the operating system of the host machines(s) that will build or run the containers, the image specified in the FROM statement may need to be changed.
-#For more information, please see https://aka.ms/containercompat
+FROM phusion/baseimage:latest
 
-FROM mcr.microsoft.com/windows/servercore:ltsc2019
+ENV DNX_VERSION 1.0.0-rc1-update1
+ENV DNX_USER_HOME /opt/DNX_BRANCH
 
-# Metadata indicating an image maintainer.
-LABEL maintainer="jshelton@contoso.com"
+ENV DNX_RUNTIME_ID ubuntu.14.04-x64
 
-# Uses dism.exe to install the IIS role.
-RUN dism.exe /online /enable-feature /all /featurename:iis-webserver /NoRestart
+RUN apt-get -qq update && apt-get -qqy install unzip curl libicu-dev libunwind8 gettext libssl-dev libcurl3-gnutls zlib1g && rm -rf /var/lib/apt/lists/*
 
+RUN curl -sSL https://raw.githubusercontent.com/aspnet/Home/dev/dnvminstall.sh | DNX_USER_HOME=$DNX_USER_HOME DNX_BRANCH=v$DNX_VERSION sh
+RUN bash -c "source $DNX_USER_HOME/dnvm/dnvm.sh \
+    && dnvm install $DNX_VERSION -alias default -r coreclr \
+    && dnvm alias default | xargs -i ln -s $DNX_USER_HOME/runtimes/{} $DNX_USER_HOME/runtimes/default"
 
-FROM mcr.microsoft.com/dotnet/core/aspnet:3.1-nanoserver-1903 AS base
+RUN LIBUV_VERSION=1.4.2 \
+    && apt-get -qq update \
+    && apt-get -qqy install autoconf automake build-essential libtool \
+    && curl -sSL https://github.com/libuv/libuv/archive/v${LIBUV_VERSION}.tar.gz | tar zxfv - -C /usr/local/src \
+    && cd /usr/local/src/libuv-$LIBUV_VERSION \
+    && sh autogen.sh && ./configure && make && make install \
+    && rm -rf /usr/local/src/libuv-$LIBUV_VERSION \
+    && ldconfig \
+    && apt-get -y purge autoconf automake build-essential libtool \
+    && apt-get -y autoremove \
+    && apt-get -y clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH $PATH:$DNX_USER_HOME/runtimes/default/bin
+
+COPY . /app
 WORKDIR /app
-EXPOSE 80
-EXPOSE 443
+RUN ["dnu", "restore"]
 
-FROM mcr.microsoft.com/dotnet/core/sdk:3.1-nanoserver-1903 AS build
-WORKDIR /src
-COPY ["WebApplication1.csproj", ""]
-RUN dotnet restore "./WebApplication1.csproj"
-COPY . .
-WORKDIR "/src/."
-RUN dotnet build "WebApplication1.csproj" -c Release -o /app/build
-
-FROM build AS publish
-RUN dotnet publish "WebApplication1.csproj" -c Release -o /app/publish
-
-FROM base AS final
-WORKDIR /app
-COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "WebApplication1.dll"]
+EXPOSE 5004
+ENTRYPOINT ["dnx", "web"]
